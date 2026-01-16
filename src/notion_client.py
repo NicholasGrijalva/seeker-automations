@@ -27,8 +27,12 @@ class NotionClient:
         else:
             self.client = Client(auth=settings.notion_api_key)
 
+        # Database IDs for page creation (pages.create)
         self.inbox_db_id = settings.inbox_database_id
         self.content_db_id = settings.content_objects_database_id
+        # Data Source IDs for queries (data_sources.query) - 2025 API format
+        self.inbox_ds_id = settings.inbox_data_source_id
+        self.content_ds_id = settings.content_data_source_id
 
     # ==================== INBOX OPERATIONS ====================
 
@@ -84,7 +88,7 @@ class NotionClient:
             }
 
         query_params = {
-            "data_source_id": self.inbox_db_id,
+            "data_source_id": self.inbox_ds_id,
             "page_size": min(limit, 100),
             "sorts": [{"property": "Date Added", "direction": "descending"}]
         }
@@ -187,7 +191,7 @@ class NotionClient:
             filter_obj = {"and": filters}
 
         query_params = {
-            "data_source_id": self.content_db_id,
+            "data_source_id": self.content_ds_id,
             "page_size": min(limit, 100),
             "sorts": [{"property": "Date Created", "direction": "descending"}]
         }
