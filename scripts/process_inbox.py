@@ -19,6 +19,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from src.notion_client import NotionClient
 from src.classify import Classifier
 from src.refine import Refiner
+from src.clean import TranscriptCleaner
 from config.settings import settings
 
 console = Console()
@@ -290,6 +291,149 @@ def promote(from_status: str, limit: int, dry_run: bool):
 
     if not dry_run:
         console.print(f"\n[green]Promoted {len(items)} items[/green]")
+
+
+@cli.command()
+@click.option("--tag", "-t", default="voice-transcript", help="Tag to filter items for cleaning")
+@click.option("--limit", "-l", default=10, help="Number of items to process")
+@click.option("--dry-run", "-d", is_flag=True, help="Preview what would be cleaned without making changes")
+def clean(tag: str, limit: int, dry_run: bool):
+    """
+    Clean voice transcripts tagged for processing.
+
+    Removes filler words (um, uh, like, you know) and formats into paragraphs
+    while preserving the original wording.
+    """
+
+    errors = settings.validate()
+    if errors:
+        console.print("[red]Configuration errors. Please set up .env[/red]")
+        sys.exit(1)
+
+    notion = NotionClient()
+    cleaner = TranscriptCleaner()
+
+    console.print(f"[bold]Cleaning transcripts (tag={tag}, limit={limit})[/bold]\n")
+
+    # Query items with the specified tag
+    all_items = notion.query_inbox(limit=100)
+    items = [item for item in all_items if tag in item.get("tags", [])][:limit]
+
+    if not items:
+        console.print(f"[yellow]No items found with tag '{tag}'[/yellow]")
+        return
+
+    console.print(f"Found {len(items)} items with tag '{tag}'\n")
+
+    if dry_run:
+        console.print("[yellow]DRY RUN - no changes will be made[/yellow]\n")
+
+    results = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console
+    ) as progress:
+
+        task = progress.add_task("Cleaning...", total=len(items))
+
+        for item in items:
+            page_id = item["id"]
+            title = item["title"]
+
+            # Get page content
+            content = notion.get_page_content(page_id)
+
+            if not content:
+                results.append({
+                    "title": title,
+                    "status": "skipped",
+                    "reason": "No content found"
+                })
+                progress.update(task, advance=1)
+                continue
+
+            if dry_run:
+                # Preview mode - show stats without cleaning
+                preview = cleaner.preview_clean(content)
+                results.append({
+                    "title": title,
+                    "status": "would_clean",
+                    "original_length": preview["original_length"],
+                    "filler_count": preview["estimated_filler_words"],
+                    "has_paragraphs": preview["has_paragraphs"]
+                })
+            else:
+                # Actually clean the content
+                cleaned = cleaner.clean(content)
+
+                # Update the page with cleaned content
+                # Clear existing content and add cleaned version
+                notion.append_to_page(
+                    page_id=page_id,
+                    text=cleaned,
+                    heading="Cleaned Transcript"
+                )
+
+                # Update status to Triaged
+                notion.update_inbox_item(page_id, {
+                    "Status": {"select": {"name": "Triaged"}}
+                })
+
+                results.append({
+                    "title": title,
+                    "status": "cleaned",
+                    "original_length": len(content),
+                    "cleaned_length": len(cleaned),
+                    "reduction": f"{((len(content) - len(cleaned)) / len(content) * 100):.1f}%"
+                })
+
+            progress.update(task, advance=1)
+
+    # Show results
+    if dry_run:
+        table = Table(title="Cleaning Preview (Dry Run)")
+        table.add_column("Title", style="white", max_width=40)
+        table.add_column("Length", style="cyan", justify="right")
+        table.add_column("Est. Fillers", style="yellow", justify="right")
+        table.add_column("Has Paragraphs", style="dim")
+
+        for r in results:
+            if r["status"] == "would_clean":
+                table.add_row(
+                    r["title"][:40],
+                    str(r["original_length"]),
+                    str(r["filler_count"]),
+                    "Yes" if r["has_paragraphs"] else "No"
+                )
+            else:
+                table.add_row(r["title"][:40], "-", "-", r.get("reason", "-"))
+    else:
+        table = Table(title="Cleaning Results")
+        table.add_column("Title", style="white", max_width=40)
+        table.add_column("Original", style="dim", justify="right")
+        table.add_column("Cleaned", style="cyan", justify="right")
+        table.add_column("Reduction", style="green", justify="right")
+
+        for r in results:
+            if r["status"] == "cleaned":
+                table.add_row(
+                    r["title"][:40],
+                    str(r["original_length"]),
+                    str(r["cleaned_length"]),
+                    r["reduction"]
+                )
+            else:
+                table.add_row(r["title"][:40], "-", "-", r.get("reason", "skipped"))
+
+    console.print(table)
+
+    if not dry_run:
+        cleaned_count = sum(1 for r in results if r["status"] == "cleaned")
+        console.print(f"\n[green]Cleaned {cleaned_count} items[/green]")
 
 
 @cli.command()

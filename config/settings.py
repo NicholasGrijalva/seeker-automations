@@ -80,6 +80,14 @@ class Settings:
         self.embedding_model = "text-embedding-3-small"  # OpenAI
         self.embedding_dimensions = 1536
 
+        # Transcript cleaning settings
+        self.clean_trigger_tag = "voice-transcript"  # Tag that triggers cleaning
+        self.filler_words = [
+            "um", "uh", "like", "you know", "so", "basically",
+            "actually", "literally", "right", "i mean", "kind of", "sort of",
+            "anyway", "well"  # when used as filler
+        ]
+
     def validate(self) -> list[str]:
         """Validate required settings are present."""
         errors = []
