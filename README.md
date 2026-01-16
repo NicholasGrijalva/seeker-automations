@@ -14,8 +14,9 @@ A Python automation system that transforms voice memos and raw ideas into struct
 6. [Pipeline Stages](#pipeline-stages)
 7. [Notion Database Schema](#notion-database-schema)
 8. [Platform Templates](#platform-templates)
-9. [Automation Options](#automation-options)
-10. [Troubleshooting](#troubleshooting)
+9. [Transcript Cleaning](#transcript-cleaning)
+10. [Automation Options](#automation-options)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -485,6 +486,82 @@ Timestamped segments:
 - **CTA** (3:00-3:15): Subscribe call-to-action
 
 Metadata: Duration, segment count
+
+---
+
+## Transcript Cleaning
+
+A dedicated feature for cleaning voice transcripts that come from external transcription services (e.g., auto-transcription tools). This preserves your original wording while removing verbal tics and formatting into readable paragraphs.
+
+### What It Does
+
+- **Removes filler words**: um, uh, like, you know, so, basically, actually, literally, right, I mean, kind of, sort of
+- **Removes false starts**: "I I think" becomes "I think"
+- **Formats into paragraphs**: Breaks wall-of-text into logical paragraphs based on topic shifts
+- **Preserves your words**: Does NOT rephrase, summarize, or change meaning
+
+### Usage
+
+Tag-based processing - items tagged with `voice-transcript` get cleaned:
+
+```bash
+# Preview what would be cleaned (no changes made)
+python scripts/process_inbox.py clean --tag voice-transcript --dry-run --limit 5
+
+# Clean all tagged items
+python scripts/process_inbox.py clean --tag voice-transcript --limit 10
+
+# Use a different tag
+python scripts/process_inbox.py clean --tag raw-transcript --limit 10
+```
+
+### Workflow Integration
+
+```
+External Transcription Service
+         |
+         v
+Notion Inbox (tagged "voice-transcript")
+         |
+         v
+python scripts/process_inbox.py clean --tag voice-transcript
+         |
+         v
+Cleaned transcript (same words, formatted)
+Status: New -> Triaged
+         |
+         v
+Continue with classify/refine/etc.
+```
+
+### Example
+
+**Before (raw transcript):**
+```
+so um like I was thinking you know that the biggest problem with knowledge work is actually um not about having access to information right its its about the synthesis step like we have infinite inputs but um basically finite attention and so the solution isnt better search you know its its about structuring what we already know
+```
+
+**After (cleaned):**
+```
+I was thinking that the biggest problem with knowledge work is not about having access to information. It's about the synthesis step.
+
+We have infinite inputs but finite attention. So the solution isn't better search - it's about structuring what we already know.
+```
+
+### Configuration
+
+In `config/settings.py`:
+
+```python
+# Default trigger tag
+self.clean_trigger_tag = "voice-transcript"
+
+# Filler words to remove
+self.filler_words = [
+    "um", "uh", "like", "you know", "so", "basically",
+    "actually", "literally", "right", "i mean", "kind of", "sort of"
+]
+```
 
 ---
 
