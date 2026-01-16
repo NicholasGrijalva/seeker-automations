@@ -83,12 +83,15 @@ class NotionClient:
                 "select": {"equals": status}
             }
 
-        response = self.client.data_sources.query(
-            data_source_id=self.inbox_db_id,
-            filter=filter_obj,
-            page_size=min(limit, 100),
-            sorts=[{"property": "Date Added", "direction": "descending"}]
-        )
+        query_params = {
+            "data_source_id": self.inbox_db_id,
+            "page_size": min(limit, 100),
+            "sorts": [{"property": "Date Added", "direction": "descending"}]
+        }
+        if filter_obj:
+            query_params["filter"] = filter_obj
+
+        response = self.client.data_sources.query(**query_params)
 
         return self._parse_query_results(response["results"], "inbox")
 
@@ -183,12 +186,15 @@ class NotionClient:
         elif len(filters) > 1:
             filter_obj = {"and": filters}
 
-        response = self.client.data_sources.query(
-            data_source_id=self.content_db_id,
-            filter=filter_obj,
-            page_size=min(limit, 100),
-            sorts=[{"property": "Date Created", "direction": "descending"}]
-        )
+        query_params = {
+            "data_source_id": self.content_db_id,
+            "page_size": min(limit, 100),
+            "sorts": [{"property": "Date Created", "direction": "descending"}]
+        }
+        if filter_obj:
+            query_params["filter"] = filter_obj
+
+        response = self.client.data_sources.query(**query_params)
 
         return self._parse_query_results(response["results"], "content_objects")
 

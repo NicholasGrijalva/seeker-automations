@@ -22,9 +22,10 @@ class Settings:
         self.openai_api_key = os.getenv("OPENAI_API_KEY") or ""
         self.voyage_api_key = os.getenv("VOYAGE_API_KEY", "")
 
-        # Notion Database IDs (from your workspace)
-        self.inbox_database_id = "2c0eba0cabd545d0a7606549cd0f3c84"
-        self.content_objects_database_id = "db6f21b8b26147119ae0b920861ec3c0"
+        # Notion Data Source IDs (new API format as of 2025)
+        # These are different from the database IDs shown in URLs
+        self.inbox_database_id = "418b91e7-0c93-45b7-b905-c4715ab25964"
+        self.content_objects_database_id = "15d28d70-ca5f-4183-b0fb-667af249ac20"
 
         # Whisper settings
         self.whisper_mode = os.getenv("WHISPER_MODE", "api")  # "api" or "local"
