@@ -1,0 +1,1 @@
+"""CognosMap Automation Tests"""

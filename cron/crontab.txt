@@ -1,0 +1,47 @@
+# CognosMap Automation Cron Jobs
+# ================================
+#
+# To install: crontab cron/crontab.txt
+# To edit: crontab -e
+# To view: crontab -l
+#
+# Note: Update paths to match your installation directory
+#
+
+# Environment setup
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+COGNOSMAP_DIR=/Users/nick/Downloads/cognosmap-automation
+
+# ─────────────────────────────────────────────────────────────
+# Voice Memo Processing
+# ─────────────────────────────────────────────────────────────
+
+# Process any new voice memos every 15 minutes
+# */15 * * * * cd $COGNOSMAP_DIR && python scripts/watch_folder.py --once >> logs/voice_memo.log 2>&1
+
+# ─────────────────────────────────────────────────────────────
+# Inbox Processing
+# ─────────────────────────────────────────────────────────────
+
+# Classify new inbox items every hour
+# 0 * * * * cd $COGNOSMAP_DIR && python scripts/process_inbox.py classify --status New --limit 20 >> logs/classify.log 2>&1
+
+# Refine triaged items every 2 hours
+# 0 */2 * * * cd $COGNOSMAP_DIR && python scripts/process_inbox.py refine --status Triaged --limit 10 >> logs/refine.log 2>&1
+
+# ─────────────────────────────────────────────────────────────
+# Daily Tasks
+# ─────────────────────────────────────────────────────────────
+
+# Generate daily stats report at 9 AM
+# 0 9 * * * cd $COGNOSMAP_DIR && python scripts/process_inbox.py stats >> logs/daily_stats.log 2>&1
+
+# Promote ready items to Content Objects at 10 AM
+# 0 10 * * * cd $COGNOSMAP_DIR && python scripts/process_inbox.py promote --limit 5 >> logs/promote.log 2>&1
+
+# ─────────────────────────────────────────────────────────────
+# Log Rotation (weekly on Sunday at midnight)
+# ─────────────────────────────────────────────────────────────
+
+# 0 0 * * 0 find $COGNOSMAP_DIR/logs -name "*.log" -mtime +7 -delete
