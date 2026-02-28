@@ -1,0 +1,3 @@
+[submodule "voice-to-notion"]
+	path = voice-to-notion
+	url = https://github.com/NicholasGrijalva/voice-to-notion.git
