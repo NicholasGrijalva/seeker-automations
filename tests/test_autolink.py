@@ -170,6 +170,43 @@ class TestInsertWikilinks:
         assert "[[Courage is the first virtue|courage]]" in result
 
 
+class TestInsertWikilinksEdgeCases:
+    def setup_method(self):
+        self.linker = _make_linker()
+
+    def test_frontmatter_not_modified(self):
+        """YAML frontmatter containing matching terms is not touched."""
+        content = "---\ntitle: Notes on Essentialism\ntags: [essentialism]\n---\n\nThis is about essentialism."
+        suggestions = [
+            WikilinkSuggestion("Essentialism", "essentialism", "high", "ref")
+        ]
+        result = self.linker.insert_wikilinks(content, suggestions)
+        # Frontmatter should be untouched
+        assert result.startswith("---\ntitle: Notes on Essentialism\ntags: [essentialism]\n---")
+        # Body should have the link
+        assert "[[essentialism]]" in result.split("---", 2)[2]
+
+    def test_multiple_insertions(self):
+        """Two suggestions both insert correctly without interfering."""
+        content = "This covers essentialism and courage in depth."
+        suggestions = [
+            WikilinkSuggestion("Essentialism", "essentialism", "high", "ref"),
+            WikilinkSuggestion("Courage is the first virtue", "courage", "high", "ref"),
+        ]
+        result = self.linker.insert_wikilinks(content, suggestions)
+        assert "[[essentialism]]" in result
+        assert "[[Courage is the first virtue|courage]]" in result
+
+    def test_existing_link_with_alias_not_double_wrapped(self):
+        """Content with [[Title|phrase]] is not re-linked."""
+        content = "This discusses [[Essentialism|the essentialist approach]] thoroughly."
+        suggestions = [
+            WikilinkSuggestion("Essentialism", "the essentialist approach", "high", "ref")
+        ]
+        result = self.linker.insert_wikilinks(content, suggestions)
+        assert result == content  # Unchanged
+
+
 class TestSuggestWikilinks:
     def test_mock_claude_response(self, sample_index):
         linker = _make_linker()
@@ -255,6 +292,71 @@ class TestAutolinkNote:
         assert result.links_added == 0
         assert len(result.suggestions) == 1
         mock_httpx.put.assert_not_called()
+
+
+class TestSuggestWikilinksEdgeCases:
+    def test_malformed_claude_response_returns_empty(self, sample_index):
+        linker = _make_linker()
+        linker.client.messages.create.return_value = _mock_claude_response(
+            "not valid json at all"
+        )
+        suggestions = linker.suggest_wikilinks(
+            "About essentialism.", sample_index, note_stem="TestNote"
+        )
+        assert suggestions == []
+
+    def test_empty_candidates_skips_claude(self, sample_index):
+        linker = _make_linker()
+        # Content with no title matches, no tags, no graph links
+        suggestions = linker.suggest_wikilinks(
+            "Completely unrelated content xyz.", sample_index, note_stem="Unrelated"
+        )
+        assert suggestions == []
+        linker.client.messages.create.assert_not_called()
+
+
+class TestAutolinkNoteErrors:
+    @patch("src.autolink.httpx")
+    def test_api_unreachable_returns_error(self, mock_httpx):
+        linker = _make_linker()
+        mock_httpx.ConnectError = ConnectionError
+        mock_httpx.get.side_effect = ConnectionError("refused")
+
+        result = linker.autolink_note("01_Capture/test.md")
+        assert result.success is False
+        assert "not reachable" in result.error
+
+    @patch("src.autolink.httpx")
+    def test_live_write_calls_update(self, mock_httpx, sample_index):
+        linker = _make_linker()
+        mock_httpx.get.return_value = MagicMock(status_code=200)
+        mock_httpx.ConnectError = ConnectionError
+
+        linker.client.messages.create.return_value = _mock_claude_response(
+            json.dumps([
+                {
+                    "target_title": "Essentialism",
+                    "anchor_phrase": "essentialism",
+                    "confidence": "high",
+                    "reason": "direct",
+                }
+            ])
+        )
+
+        with patch.object(
+            linker, "build_vault_index", return_value=sample_index
+        ), patch.object(
+            linker,
+            "get_note_content",
+            return_value="Some content about essentialism.",
+        ), patch.object(
+            linker, "update_note", return_value=True
+        ) as mock_update:
+            result = linker.autolink_note("01_Capture/test.md", dry_run=False)
+
+        assert result.success is True
+        assert result.links_added > 0
+        mock_update.assert_called_once()
 
 
 class TestVaultIndex:

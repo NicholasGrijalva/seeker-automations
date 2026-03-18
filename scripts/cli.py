@@ -302,8 +302,8 @@ def autolink(note_path: str, dry_run: bool):
     if not settings.obsidian_rest_api_key:
         console.print("[red]OBSIDIAN_LOCAL_REST_API_KEY not set in .env[/red]")
         sys.exit(1)
-    if not settings.gemini_api_key:
-        console.print("[red]GEMINI_API_KEY not set in .env[/red]")
+    if not settings.anthropic_api_key:
+        console.print("[red]ANTHROPIC_API_KEY not set in .env[/red]")
         sys.exit(1)
 
     linker = AutoLinker()

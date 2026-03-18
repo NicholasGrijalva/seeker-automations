@@ -1,122 +1,199 @@
 # CognosMap Automation Pipeline
 
-A Python automation system that transforms voice memos and raw ideas into structured content in Notion, with intelligent classification, deduplication, and multi-platform output generation.
+A Python automation system that transforms voice memos and raw ideas into structured, searchable content in Notion. The pipeline handles transcription, classification, deduplication, refinement, multi-platform output generation, and auto-wikilinking for Obsidian vaults.
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Installation](#installation)
-4. [Configuration](#configuration)
+1. [Project Overview](#project-overview)
+2. [Architecture Diagram](#architecture-diagram)
+3. [Directory Structure](#directory-structure)
+4. [Setup](#setup)
 5. [Usage](#usage)
 6. [Pipeline Stages](#pipeline-stages)
-7. [Notion Database Schema](#notion-database-schema)
-8. [Platform Templates](#platform-templates)
-9. [Transcript Cleaning](#transcript-cleaning)
-10. [Automation Options](#automation-options)
-11. [Troubleshooting](#troubleshooting)
+7. [Autolink System](#autolink-system)
+8. [Vault Merge](#vault-merge)
+9. [Testing](#testing)
+10. [Configuration Reference](#configuration-reference)
 
 ---
 
-## Overview
+## Project Overview
 
-This pipeline automates the CognosMap Creation Flow - converting raw voice memos and typed ideas into structured, searchable content in Notion.
+CognosMap Automation converts raw voice dumps and text ideas into structured knowledge objects through a multi-stage pipeline:
+
+**Voice memo (or raw text) -> Transcribe -> Classify -> Deduplicate -> Notion -> Refine -> Template -> Autolink**
+
+Each stage is independently usable, but the orchestrator (`pipeline.py`) chains them into a single command. The system targets a personal knowledge management workflow where ideas arrive as stream-of-consciousness voice memos and need to be triaged, deduplicated against existing content, stored in Notion databases, and optionally refined into publishable formats for Twitter, LinkedIn, Substack, or video.
+
+The autolink subsystem separately handles Obsidian vault enrichment -- given a newly written note, it scans the vault graph, selects candidate link targets, and uses Claude to decide which `[[wikilinks]]` to insert.
+
+### External Dependencies
+
+| Service | Purpose | Required |
+|---------|---------|----------|
+| Anthropic Claude | Classification, refinement, transcript cleaning, autolink decisions | Yes |
+| OpenAI | Whisper transcription (API mode), embedding generation for dedup | Yes |
+| Notion API | Database reads/writes (Inbox + Content Objects) | Yes |
+| Obsidian Local REST API | Read/write notes for autolink | Only for autolink |
+| Google Gemini | Referenced in settings (cheaper bulk tasks) | Optional |
+
+---
+
+## Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph Inputs
+        VM["Voice Memo\n(.m4a, .mp3, .wav)"]
+        RT["Raw Text\n(CLI argument / stdin)"]
+        NP["Existing Notion Page\n(page ID)"]
+    end
+
+    subgraph "Pipeline Orchestrator (pipeline.py)"
+        T["Stage 1: Transcribe\n(Whisper API / local)"]
+        CL["Stage 2: Classify\n(Claude)"]
+        DD["Stage 3: Dedupe\n(OpenAI Embeddings)"]
+        NO["Stage 4: Notion\n(Create / Append / Skip)"]
+        RE["Stage 5: Refine\n(Claude -> Hypertext)"]
+        TE["Stage 6: Template\n(Twitter / LinkedIn / etc.)"]
+        AL["Stage 7: Autolink\n(Obsidian wikilinks)"]
+    end
+
+    subgraph "Notion Databases"
+        IB["Inbox Database"]
+        CO["Content Objects Database"]
+    end
+
+    subgraph "Platform Outputs"
+        TW["Twitter Thread"]
+        LI["LinkedIn Post"]
+        SS["Substack Essay"]
+        VS["Video Script"]
+    end
+
+    subgraph "Obsidian Vault"
+        OV["Vault Notes\n(obsidiantools graph)"]
+        OR["Obsidian REST API"]
+    end
+
+    VM --> T
+    RT --> CL
+    T --> CL
+    CL --> DD
+    DD -->|"create_new"| NO
+    DD -->|"append_to"| NO
+    DD -->|"skip"| NO
+    NO --> IB
+    NO --> CO
+    NO --> RE
+    RE --> TE
+    TE --> TW
+    TE --> LI
+    TE --> SS
+    TE --> VS
+    NO -->|"obsidian: prefix"| AL
+    AL --> OV
+    AL --> OR
+    NP --> RE
+```
+
+### Batch Processing Flow
+
+```mermaid
+flowchart LR
+    subgraph "process_inbox.py"
+        CI["classify\n(New -> Triaged)"]
+        CLE["clean\n(Remove fillers)"]
+        REF["refine\n(Triaged -> Ready to Write)"]
+        PRO["promote\n(Inbox -> Content Objects)"]
+        ST["stats\n(Count by status)"]
+    end
+
+    IB2["Inbox DB"] --> CI
+    IB2 --> CLE
+    CI --> REF
+    CLE --> REF
+    REF --> PRO
+    PRO --> CO2["Content Objects DB"]
+    IB2 --> ST
+```
+
+---
+
+## Directory Structure
 
 ```
-                     INPUT SOURCES
-                          |
-        +-----------------+-----------------+
-        |                 |                 |
-   Voice Memo         Raw Text          Clipboard
-   (m4a/mp3)          (txt/md)          (stdin)
-        |                 |                 |
-        +-----------------+-----------------+
-                          |
-                          v
-              +-------------------+
-              |  1. TRANSCRIBE    |  Whisper API or local model
-              +--------+----------+
-                       |
-                       v
-              +-------------------+
-              |  2. CLASSIFY      |  Claude determines:
-              |  - Type           |  Essay/Video/Post/Proself
-              |  - Priority       |  Active/Essential/Backlog
-              |  - Category       |  AI, Philosophy, etc.
-              |  - Tags           |  Auto-extracted topics
-              +--------+----------+
-                       |
-                       v
-              +-------------------+
-              |  3. DEDUPE        |  Embeddings check against
-              |                   |  existing Notion content
-              +--------+----------+
-                       |
-           +-----------+-----------+
-           |                       |
-      DUPLICATE?              NEW IDEA
-           |                       |
-           v                       v
-      APPEND TO               CREATE NEW
-      EXISTING                NOTION PAGE
-           |                       |
-           +-----------+-----------+
-                       |
-                       v
-              +-------------------+
-              |  4. REFINE        |  (Optional) Transform to
-              |                   |  structured hypertext
-              +--------+----------+
-                       |
-                       v
-              +-------------------+
-              |  5. TEMPLATE      |  (Optional) Format for
-              |                   |  Twitter/LinkedIn/etc.
-              +-------------------+
+cognosmap-automation/
+|
+|-- src/                          # Core pipeline modules
+|   |-- __init__.py               # Package exports (Pipeline, Classifier, etc.)
+|   |-- pipeline.py               # Orchestrator -- chains all stages together
+|   |-- transcribe.py             # Whisper API/local transcription
+|   |-- classify.py               # Claude-based content classification
+|   |-- dedupe.py                 # Embedding-based duplicate detection
+|   |-- notion_client.py          # Notion API client (Inbox + Content Objects CRUD)
+|   |-- refine.py                 # Raw text -> structured hypertext fragments
+|   |-- templates.py              # Platform formatters (Twitter, LinkedIn, Substack, Video)
+|   |-- clean.py                  # Transcript filler-word removal via Claude
+|   |-- autolink.py               # Obsidian wikilink insertion via graph traversal + Claude
+|
+|-- config/                       # Configuration
+|   |-- __init__.py               # Exports settings + NotionSchema
+|   |-- settings.py               # Central settings loaded from .env
+|   |-- notion_schema.py          # InboxItem / ContentObject dataclasses + Notion property mapping
+|
+|-- scripts/                      # Runnable entry points
+|   |-- cli.py                    # Main CLI (process, refine, inbox, content, check, autolink)
+|   |-- process_inbox.py          # Batch inbox operations (classify, clean, refine, promote, stats)
+|   |-- watch_folder.py           # Filesystem watcher for auto-processing voice memos
+|   |-- merge_vaults.py           # Merge Providence Obsidian vault into RealIcloudVault
+|
+|-- tests/                        # Pytest test suite
+|   |-- __init__.py
+|   |-- test_autolink.py          # Autolink candidate selection, insertion, Claude mock tests
+|   |-- test_classify.py          # Classification result structure + mock Claude tests
+|   |-- test_dedupe.py            # Cosine similarity, threshold logic tests
+|   |-- test_pipeline.py          # Pipeline orchestration + stage ordering tests
+|
+|-- cron/
+|   |-- crontab.txt               # Example cron schedule for automated processing
+|
+|-- specs/                        # Design specs and issue docs
+|   |-- autolink-issue.md
+|   |-- ISSUE-autolink.md
+|   |-- multimedia-triage-pipeline-spec.md
+|
+|-- logs/                         # Runtime log output (gitignored)
+|-- .env                          # API keys and configuration (gitignored)
+|-- .env.example                  # Template for .env with placeholder values
+|-- .gitignore
+|-- requirements.txt              # Python dependencies
+|-- setup.sh                      # One-command setup script
+|-- IMPLEMENTATION_PLAN.md        # Original implementation plan
 ```
 
 ---
 
-## Architecture
-
-### Core Modules
-
-| Module | Tech | Purpose |
-|--------|------|---------|
-| `transcribe.py` | Whisper (API/local) | Voice memo to text |
-| `classify.py` | Claude API | Determine type, priority, category, tags |
-| `dedupe.py` | OpenAI Embeddings | Check if idea already exists |
-| `notion_client.py` | notion-client | CRUD with Notion databases |
-| `refine.py` | Claude API | Raw text to structured hypertext |
-| `templates.py` | Custom formatters | Platform-specific outputs |
-| `pipeline.py` | Orchestrator | Coordinates all stages |
-
-### Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/cli.py` | Main command-line interface |
-| `scripts/watch_folder.py` | Monitor folder for new voice memos |
-| `scripts/process_inbox.py` | Batch process existing Notion items |
-
----
-
-## Installation
+## Setup
 
 ### Prerequisites
 
-- Python 3.10+
-- Notion account with API integration
-- API keys for: Notion, Anthropic (Claude), OpenAI
+- **Python 3.11+** (uses `str | Path` union syntax, `list[str]` generics)
+- **Notion account** with an API integration created at https://www.notion.so/my-integrations
+- **API keys** for: Anthropic (Claude), OpenAI
+- **Obsidian** with Local REST API plugin (only for autolink feature)
 
 ### Quick Setup
 
 ```bash
 cd ~/Documents/cognosmap-automation
+chmod +x setup.sh
 ./setup.sh
 ```
+
+This creates a venv, installs dependencies, and copies `.env.example` to `.env` if it does not already exist.
 
 ### Manual Setup
 
@@ -130,7 +207,7 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your actual API keys
 ```
 
 ### Verify Installation
@@ -140,510 +217,558 @@ source venv/bin/activate
 python scripts/cli.py check
 ```
 
-Expected output:
-```
-Checking configuration...
+This tests connectivity to Notion, Anthropic, and OpenAI. Expected output shows green checkmarks for each service.
 
-[OK] All API keys configured
-
-Testing Notion connection...
-[OK] Inbox database connected
-[OK] Content Objects database connected
-
-Testing Claude connection...
-[OK] Anthropic client configured
-
-Testing OpenAI connection...
-[OK] OpenAI client configured
-```
-
----
-
-## Configuration
-
-### Environment Variables (.env)
-
-```bash
-# Required API Keys
-NOTION_API_KEY=ntn_xxxxxxxxxxxxxxxxxxxxx
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxx
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxx
-
-# Optional: Better embeddings
-VOYAGE_API_KEY=voyage-xxxxxxxxxxxxxxxxxxxxx
-
-# Whisper Settings
-WHISPER_MODE=api          # "api" (OpenAI) or "local" (whisper model)
-WHISPER_MODEL=whisper-1   # For API mode
-# WHISPER_MODEL=base      # For local: tiny, base, small, medium, large
-
-# Deduplication
-DEDUPE_THRESHOLD=0.85     # 0.0-1.0, higher = stricter matching
-
-# Automation
-VOICE_MEMO_FOLDER=/Users/nick/voice-memos
-
-# Logging
-LOG_LEVEL=INFO
-```
-
-### Notion Setup
+### Notion Database Setup
 
 1. Create an integration at https://www.notion.so/my-integrations
-2. Copy the "Internal Integration Token" to `NOTION_API_KEY`
-3. Share your databases with the integration:
-   - Open each database in Notion
-   - Click `...` menu > "Connections" > Add your integration
-4. Database IDs are configured in `config/settings.py`
+2. Copy the "Internal Integration Token" to `NOTION_API_KEY` in `.env`
+3. Share both databases (Inbox and Content Objects) with the integration via each database's "Connections" menu
+4. Update the four database/data-source IDs in `config/settings.py` to match your workspace:
+   - `inbox_database_id` -- from the Inbox database URL (for page creation)
+   - `content_objects_database_id` -- from the Content Objects database URL (for page creation)
+   - `inbox_data_source_id` -- for queries via `data_sources.query` (2025 Notion API format)
+   - `content_data_source_id` -- same, for Content Objects
 
-**Important (Notion 2025 API):** The code handles two ID formats automatically:
-- `data_source_id` - for querying (new 2025 format)
-- `database_id` - for page creation (legacy format)
-
-### Classification Options
-
-Edit `config/settings.py` to customize:
-
-```python
-# Content Types
-content_types = ["Essay", "Video", "Post", "Proself"]
-
-# Priority Levels
-priority_levels = ["Active", "Essential", "Backlog"]
-
-# Categories
-categories = [
-    "AI/Technology",
-    "Philosophy/Spirituality",
-    "Leadership/Business",
-    "Personal Development",
-    "Content Strategy",
-    "Relationships",
-    "Health/Fitness",
-    "Other"
-]
-```
+The 2025 Notion API split means querying uses `data_source_id` while page creation uses `database_id`. Both are required.
 
 ---
 
 ## Usage
 
-### Command Line Interface
+All commands assume you have activated the virtual environment:
 
 ```bash
-# Activate environment
 cd ~/Documents/cognosmap-automation
 source venv/bin/activate
-
-# Show all commands
-python scripts/cli.py --help
 ```
 
-### Process Text
+### CLI Commands (`scripts/cli.py`)
+
+#### `process` -- Run the full pipeline
 
 ```bash
-# Basic - just process and add to Notion
-python scripts/cli.py process "Your idea or thought here"
+# Process inline text
+python scripts/cli.py process "The biggest bottleneck in knowledge work is synthesis, not search"
 
-# From clipboard/stdin
-echo "Your idea" | python scripts/cli.py process
+# Process a voice memo
+python scripts/cli.py process --voice ~/voice-memos/idea-2026-03-18.m4a
 
-# Multi-line input
+# Process with auto-refinement
+python scripts/cli.py process "Your idea" --refine
+
+# Process with refinement + platform outputs
+python scripts/cli.py process "Your idea" -r -p twitter -p linkedin -p substack -p video
+
+# Read from stdin (type content, Ctrl+D to finish)
 python scripts/cli.py process
-# Then type your content, press Ctrl+D when done
 ```
 
-### Process Voice Memo
+#### `refine` -- Refine an existing Notion page
 
 ```bash
-python scripts/cli.py process --voice /path/to/recording.m4a
+# Refine a page and generate platform outputs
+python scripts/cli.py refine "page-id-here" --platforms twitter --platforms linkedin
 ```
 
-### With Refinement + Platform Outputs
+#### `inbox` -- List Inbox items
 
 ```bash
-# Refine and generate Twitter thread
-python scripts/cli.py process "Your idea" --refine --platforms twitter
-
-# Multiple platforms
-python scripts/cli.py process "Your idea" -r -p twitter -p linkedin -p substack
-```
-
-### View Notion Databases
-
-```bash
-# List inbox items
 python scripts/cli.py inbox --status New --limit 20
+python scripts/cli.py inbox --status Triaged
+```
 
-# List content objects
+#### `content` -- List Content Objects
+
+```bash
 python scripts/cli.py content --limit 10
 ```
 
-### Refine Existing Page
-
-```bash
-# Get page ID from Notion URL
-python scripts/cli.py refine "page-id-here" --platforms twitter,linkedin
-```
-
-### Check Configuration
+#### `check` -- Validate configuration and API connections
 
 ```bash
 python scripts/cli.py check
 ```
 
+#### `autolink` -- Insert wikilinks into an Obsidian note
+
+```bash
+# Dry run -- show suggestions without modifying the note
+python scripts/cli.py autolink "01_Capture/My New Note.md" --dry-run
+
+# Apply wikilinks
+python scripts/cli.py autolink "01_Capture/My New Note.md"
+```
+
+The `note_path` argument is vault-relative (e.g., `01_Capture/My Note.md`), not an absolute filesystem path.
+
+### Batch Processing (`scripts/process_inbox.py`)
+
+These commands operate on existing Notion Inbox items in bulk.
+
+```bash
+# Classify unprocessed items (adds title, type, tags; moves New -> Triaged)
+python scripts/process_inbox.py classify --status New --limit 20
+python scripts/process_inbox.py classify --status New --limit 10 --dry-run
+
+# Clean voice transcripts (removes filler words, formats paragraphs)
+python scripts/process_inbox.py clean --tag voice-transcript --limit 10
+python scripts/process_inbox.py clean --tag voice-transcript --dry-run
+
+# Refine triaged items (generates structured hypertext)
+python scripts/process_inbox.py refine --status Triaged --limit 5 --output ./refined/
+
+# Promote inbox items to Content Objects database
+python scripts/process_inbox.py promote --from-status "Ready to Write" --limit 5
+python scripts/process_inbox.py promote --dry-run
+
+# Show inbox statistics by status
+python scripts/process_inbox.py stats
+```
+
+### Folder Watcher (`scripts/watch_folder.py`)
+
+Monitors a directory for new audio files and processes them automatically.
+
+```bash
+# Watch the default folder (VOICE_MEMO_FOLDER from .env)
+python scripts/watch_folder.py
+
+# Watch a specific folder
+python scripts/watch_folder.py /path/to/voice-memos/
+
+# Process existing files once and exit (no daemon)
+python scripts/watch_folder.py --once
+
+# Move processed files to a separate directory
+python scripts/watch_folder.py --processed ~/voice-memos/done/
+```
+
+### Cron Automation
+
+Example schedules are provided in `cron/crontab.txt`. All entries are commented out by default.
+
+```bash
+# Install the cron schedule (after reviewing and uncommenting desired jobs)
+crontab cron/crontab.txt
+```
+
+Key schedules:
+- Voice memo processing: every 15 minutes
+- Inbox classification: every hour
+- Content refinement: every 2 hours
+- Daily stats report: 9 AM
+- Inbox promotion: 10 AM
+- Log rotation: weekly
+
 ---
 
 ## Pipeline Stages
 
-### Stage 1: Transcribe
+### Stage 1: Transcribe (`src/transcribe.py`)
 
-**Module:** `src/transcribe.py`
+Converts audio files to text using OpenAI Whisper.
 
-Converts voice memos to text using OpenAI Whisper.
+**Modes:**
+- `api` (default) -- Sends audio to OpenAI's hosted Whisper API. Requires `OPENAI_API_KEY`.
+- `local` -- Loads a local Whisper model. Requires `openai-whisper` + `torch` packages (large download). The model is lazy-loaded on first use.
 
-- **API Mode** (default): Uses OpenAI's Whisper API
-- **Local Mode**: Runs whisper model locally (requires more setup)
+**Supported formats:** `.m4a`, `.mp3`, `.mp4`, `.wav`, `.webm`, `.mpeg`, `.mpga`, `.ogg`
 
-Supports: `.m4a`, `.mp3`, `.wav`, `.webm`, `.mp4`, `.mpeg`, `.mpga`, `.oga`, `.ogg`
+**Output:** Dict with `text` (full transcript), `segments` (timestamped chunks), `duration`, and `language`.
 
-### Stage 2: Classify
+This stage is skipped entirely when the input is raw text.
 
-**Module:** `src/classify.py`
+### Stage 2: Classify (`src/classify.py`)
 
-Uses Claude to analyze content and extract:
+Uses Claude to analyze the text and extract structured metadata. The system prompt is tuned for a creator focused on AI/technology, philosophy, leadership, and personal development.
 
-| Field | Description |
-|-------|-------------|
-| `title` | Compelling, descriptive title |
-| `content_type` | Essay, Video, Post, or Proself |
-| `priority` | Active (urgent), Essential (soon), Backlog (later) |
-| `category` | Best-fit category from predefined list |
-| `tags` | 2-5 specific topic tags |
-| `main_idea` | 1-2 sentence summary |
-| `atomic_ideas` | Standalone insights that could be separate posts |
-| `suggested_platforms` | Recommended platforms for this content |
-| `related_concepts` | Concepts to link to other ideas |
+**Output fields:**
 
-### Stage 3: Dedupe
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | `str` | Compelling, descriptive title |
+| `content_type` | `str` | One of: Essay, Video, Post, Proself |
+| `priority` | `str` | Active (urgent), Essential (soon), Backlog (later) |
+| `category` | `str` | Best-fit from predefined list (AI/Technology, Philosophy/Spirituality, etc.) |
+| `tags` | `list[str]` | 2-5 extracted topic tags |
+| `main_idea` | `str` | 1-2 sentence summary |
+| `atomic_ideas` | `list[str]` | Standalone insights that could each be their own post |
+| `suggested_platforms` | `list[str]` | Recommended distribution channels |
+| `related_concepts` | `list[str]` | Concepts to cross-reference |
 
-**Module:** `src/dedupe.py`
+If Claude returns malformed JSON, the classifier falls back to a default result using truncated input text.
 
-Checks for similar existing content using embeddings:
+### Stage 3: Dedupe (`src/dedupe.py`)
 
-1. Generates embedding for new content (OpenAI `text-embedding-3-small`)
-2. Queries recent items from Notion Inbox and Content Objects
-3. Computes cosine similarity against existing items
-4. Returns recommendation:
+Checks whether the new content already exists in Notion using embedding-based similarity.
 
-| Score | Recommendation | Action |
-|-------|----------------|--------|
-| >= 0.95 | `skip` | Nearly identical, don't create |
-| >= threshold | `append_to` | Add to existing page |
-| >= threshold * 0.8 | `review` | Human should decide |
-| < threshold * 0.8 | `create_new` | Create new page |
+**Process:**
+1. Generate an embedding for the new text using OpenAI `text-embedding-3-small` (truncated to 8000 chars)
+2. Fetch the 50 most recent items from both Inbox and Content Objects databases
+3. Compute cosine similarity between the new embedding and each existing item's embedding
+4. Embeddings are cached in-memory by page ID to avoid redundant API calls
 
-Default threshold: `0.85` (configurable via `DEDUPE_THRESHOLD`)
+**Decision thresholds (default `DEDUPE_THRESHOLD=0.85`):**
 
-### Stage 4: Notion
+| Similarity Score | Recommendation | Pipeline Action |
+|-----------------|----------------|-----------------|
+| >= 0.95 | `skip` | Do nothing -- nearly identical content exists |
+| >= 0.85 | `append_to` | Append new text to the existing page |
+| >= 0.68 (threshold * 0.8) | `review` | Flag for human review |
+| < 0.68 | `create_new` | Create a new Inbox page |
 
-**Module:** `src/notion_client.py`
+### Stage 4: Notion (`src/notion_client.py`)
 
-Creates or updates Notion pages:
+Acts on the deduplication recommendation:
 
-- **New ideas**: Creates page in Inbox database
-- **Duplicates**: Appends content to existing page with timestamp
-- **Page body**: Includes raw transcript in collapsible section
+- **`create_new`**: Creates a new page in the Inbox database with the classification metadata as properties and the raw transcript in the page body.
+- **`append_to`**: Appends the new text to the existing page with a dated heading.
+- **`skip`**: Records the existing page ID but makes no changes.
 
-### Stage 5: Refine (Optional)
+The client handles both the 2025 `data_sources.query` API (for reads) and the legacy `pages.create` API (for writes).
 
-**Module:** `src/refine.py`
+### Stage 5: Refine (`src/refine.py`) -- Optional
 
-Transforms raw content into structured hypertext:
+Transforms raw text into structured "hypertext" -- a set of typed fragments that can be reassembled for any platform. The guiding philosophy:
+
+> "Digital aphorisms linked to longer meditations. A constellation, not a monolith."
+
+**Output structure:**
 
 ```
-"Digital aphorisms linked to longer meditations"
-"A constellation, not a monolith"
+RefinedContent
+  |-- title: str
+  |-- core_aphorism: str              # The single tweetable insight (<280 chars)
+  |-- fragments: list[HypertextFragment]
+  |     |-- fragment_type: str        # core_claim | supporting | example | source | counter
+  |     |-- content: str              # 1-3 sentences
+  |     |-- linked_concepts: list[str]
+  |     |-- source_reference: str?
+  |-- suggested_connections: list[str] # Related ideas to explore
+  |-- structure_notes: str             # How pieces fit together
 ```
 
-Output structure:
-- **Core Aphorism**: Single tweetable insight (< 280 chars)
-- **Fragments**: Typed content pieces
-  - `core_claim` - Main arguments
-  - `supporting` - Evidence and elaboration
-  - `example` - Concrete examples
-  - `source` - Citations and references
-  - `counter` - Steelmanned opposing views
-- **Linked Concepts**: Terms that should hyperlink to other ideas
-- **Suggested Connections**: Related ideas to explore
+Also provides a `to_markdown()` method for rendering as a structured Markdown document with Obsidian-style `[[wikilinks]]` in the Related Ideas section.
 
-### Stage 6: Template (Optional)
+### Stage 6: Template (`src/templates.py`) -- Optional
 
-**Module:** `src/templates.py`
+Formats refined content for specific platforms:
 
-Formats refined content for specific platforms.
+| Platform | Format | Key Details |
+|----------|--------|-------------|
+| `twitter_thread` | Numbered thread with hook | Auto-splits long tweets, adds thread emoji, CTA |
+| `linkedin` | Hook + body + hashtags | Arrow-prefixed supporting points, auto-generated hashtags |
+| `substack` | Full Markdown essay | Sections: Insight, Going Deeper, Examples, The Other Side, Takeaway |
+| `video_script` | Timestamped segments | HOOK (0:00-0:15), PROBLEM, POINT 1-3, EXAMPLE, CTA with B-roll notes |
+
+### Stage 7: Autolink (`src/autolink.py`) -- Optional
+
+Triggers when `source_context` starts with `"obsidian:"`. See [Autolink System](#autolink-system) below for full details.
+
+### Transcript Cleaning (`src/clean.py`)
+
+A standalone module (not part of the main pipeline) for cleaning voice transcripts. Uses Claude to remove filler words (um, uh, like, you know, etc.) and format wall-of-text transcripts into logical paragraphs while strictly preserving the speaker's original wording and meaning.
+
+Accessible via: `python scripts/process_inbox.py clean --tag voice-transcript`
 
 ---
 
-## Notion Database Schema
+## Autolink System
 
-### Inbox Database
+The autolink module (`src/autolink.py`) inserts `[[wikilinks]]` into Obsidian notes by combining graph-based candidate selection with Claude-based final judgment.
 
-| Property | Type | Description |
-|----------|------|-------------|
-| Title | Title | Item title |
-| Date Added | Date | Auto-populated |
-| Status | Select | New, Triaged, Processed, Ready to Write |
-| Tags | Multi-select | Topic tags |
-| Type | Select | Essay, Video, Post, Proself |
-| Project | Select | Optional project assignment |
-| URL | URL | Source URL if applicable |
+### How It Works
 
-### Content Objects Database
+```mermaid
+flowchart TD
+    A["Input: vault-relative note path"]
+    B["Build Vault Index\n(obsidiantools)"]
+    C["Read note content\n(Obsidian REST API)"]
+    D["Find Candidates\n(~20 notes)"]
+    E["Claude Selection\n(content + candidates -> JSON)"]
+    F["Insert Wikilinks\n(regex, end-to-start)"]
+    G["Write back via REST API"]
 
-| Property | Type | Description |
-|----------|------|-------------|
-| Name | Title | Content piece name |
-| Category | Select | Content category |
-| Content Type | Select | Essay, Video, Post, Proself |
-| Status | Select | Backlog, To-Do, Planning, Draft, Published |
-| Date Created | Date | Auto-populated |
-| Tags | Multi-select | Topic tags |
-| Main Idea | Rich Text | Core insight summary |
-| Platform | Multi-select | Target platforms |
-| Target Publish Date | Date | Optional deadline |
+    A --> B
+    A --> C
+    B --> D
+    C --> D
+    D --> E
+    E --> F
+    F --> G
 
----
+    subgraph "Candidate Selection (find_candidates)"
+        D1["Step 1: Title Scan\n+3 points per verbatim match"]
+        D2["Step 2: Tag Overlap\n+N points per shared tag"]
+        D3["Step 3: Graph Walk\n+2 points per 1-hop neighbor"]
+        D4["Step 4: Backlink Fan-in\n+1 point per indirect target"]
+    end
 
-## Platform Templates
-
-### Twitter Thread
-
-```
-1/n
-
-[Core aphorism - the hook]
-
----
-
-2/n
-
-[Core claims and supporting points as individual tweets]
-
----
-
-n/n
-
-That's the thread.
-
-If this resonated, follow for more on [topic].
+    D --> D1
+    D1 --> D2
+    D2 --> D3
+    D3 --> D4
+    D4 -->|"Top 20 by score"| E
 ```
 
-Metadata: Tweet count, total characters
+### Candidate Selection Algorithm
 
-### LinkedIn Post
+The `find_candidates` method scores every note in the vault using four signals, then sends the top 20 to Claude:
 
-```
-[Core aphorism - hook line]
+1. **Title Scan (+3 points)** -- If a note title (3+ characters) appears verbatim in the new note's content (case-insensitive), it scores +3. This catches direct references like "essentialism" matching a note titled "Essentialism".
 
-[Key claims expanded]
+2. **Tag Overlap (+N points)** -- For each tag shared between the new note and another note, the other note scores +1. A note sharing 3 tags gets +3 points. This surfaces thematically related notes that may not be mentioned by name.
 
--> Supporting point 1
--> Supporting point 2
--> Supporting point 3
+3. **Graph Walk (+2 points)** -- Using the vault's link graph (a NetworkX `MultiDiGraph`), the algorithm looks at notes the new note already links to, then walks one hop to their successors and predecessors. Each 1-hop neighbor scores +2. This finds "friends of friends" in the knowledge graph.
 
-The key insight: [structure notes]
+4. **Backlink Fan-in (+1 point)** -- For each candidate already scored, the algorithm looks at what that candidate links to. If multiple candidates point to the same target, that target gets a bonus (+1 per pointing candidate). This surfaces hub notes that many related concepts converge on.
 
----
+### Claude Decision
 
-What's your take? Let me know in the comments.
+The top 20 candidates are sent to Claude along with the note content. Claude returns a JSON array of suggestions, each with:
+- `target_title` -- which existing note to link to
+- `anchor_phrase` -- the exact phrase in the note content that should become the link
+- `confidence` -- high, medium, or low
+- `reason` -- brief justification (under 10 words)
 
-#hashtag1 #hashtag2
-```
+Low-confidence suggestions are filtered out based on `AUTOLINK_MIN_CONFIDENCE` (default: "medium" allows high + medium).
 
-Metadata: Character count, hashtag count
+### Wikilink Insertion
 
-### Substack Essay
+The `insert_wikilinks` method processes suggestions from end-to-start to avoid offset drift:
 
-Full markdown essay with:
-- Title and pull quote
-- "The Insight" section (core claims)
-- "Going Deeper" section (supporting points)
-- Examples section
-- "The Other Side" (counter-arguments)
-- "The Takeaway" (conclusion)
-- Related ideas
-
-Metadata: Word count, section count
-
-### Video Script
-
-Timestamped segments:
-- **HOOK** (0:00-0:15): Core aphorism, direct to camera
-- **PROBLEM** (0:15-1:00): Establish the problem
-- **POINT 1-3** (1:00-2:30): Main content with B-roll suggestions
-- **EXAMPLE** (2:30-3:00): Concrete example
-- **CTA** (3:00-3:15): Subscribe call-to-action
-
-Metadata: Duration, segment count
-
----
-
-## Transcript Cleaning
-
-A dedicated feature for cleaning voice transcripts that come from external transcription services (e.g., auto-transcription tools). This preserves your original wording while removing verbal tics and formatting into readable paragraphs.
-
-### What It Does
-
-- **Removes filler words**: um, uh, like, you know, so, basically, actually, literally, right, I mean, kind of, sort of
-- **Removes false starts**: "I I think" becomes "I think"
-- **Formats into paragraphs**: Breaks wall-of-text into logical paragraphs based on topic shifts
-- **Preserves your words**: Does NOT rephrase, summarize, or change meaning
-
-### Usage
-
-Tag-based processing - items tagged with `voice-transcript` get cleaned:
-
-```bash
-# Preview what would be cleaned (no changes made)
-python scripts/process_inbox.py clean --tag voice-transcript --dry-run --limit 5
-
-# Clean all tagged items
-python scripts/process_inbox.py clean --tag voice-transcript --limit 10
-
-# Use a different tag
-python scripts/process_inbox.py clean --tag raw-transcript --limit 10
-```
-
-### Workflow Integration
-
-```
-External Transcription Service
-         |
-         v
-Notion Inbox (tagged "voice-transcript")
-         |
-         v
-python scripts/process_inbox.py clean --tag voice-transcript
-         |
-         v
-Cleaned transcript (same words, formatted)
-Status: New -> Triaged
-         |
-         v
-Continue with classify/refine/etc.
-```
-
-### Example
-
-**Before (raw transcript):**
-```
-so um like I was thinking you know that the biggest problem with knowledge work is actually um not about having access to information right its its about the synthesis step like we have infinite inputs but um basically finite attention and so the solution isnt better search you know its its about structuring what we already know
-```
-
-**After (cleaned):**
-```
-I was thinking that the biggest problem with knowledge work is not about having access to information. It's about the synthesis step.
-
-We have infinite inputs but finite attention. So the solution isn't better search - it's about structuring what we already know.
-```
+- If the anchor phrase matches the target title (case-insensitive): inserts `[[phrase]]`
+- If they differ: inserts `[[Target Title|phrase]]` (Obsidian alias syntax)
+- Skips phrases already wrapped in `[[...]]`
+- Only links the first occurrence of each phrase
 
 ### Configuration
 
-In `config/settings.py`:
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `AUTOLINK_MAX_SUGGESTIONS` | 8 | Max wikilinks Claude can suggest |
+| `AUTOLINK_MIN_CONFIDENCE` | medium | Minimum confidence to accept (high, medium, low) |
+| `OBSIDIAN_LOCAL_REST_API_KEY` | -- | API key for Obsidian REST plugin |
+| `OBSIDIAN_VAULT_PATH` | (hardcoded) | Filesystem path to the vault |
+| `OBSIDIAN_REST_API_PORT` | 27124 | Port the REST plugin listens on |
 
-```python
-# Default trigger tag
-self.clean_trigger_tag = "voice-transcript"
+Folders skipped during indexing: `.obsidian`, `.smart-env`, `.trash`, `05_Utils`, `06_Archive`
 
-# Filler words to remove
-self.filler_words = [
-    "um", "uh", "like", "you know", "so", "basically",
-    "actually", "literally", "right", "i mean", "kind of", "sort of"
-]
-```
+### Requirements
 
----
-
-## Automation Options
-
-### Folder Watcher
-
-Monitor a folder for new voice memos:
-
-```bash
-python scripts/watch_folder.py /path/to/voice-memos/
-```
-
-Processes new files automatically as they appear.
-
-### Cron Jobs
-
-Add to crontab for scheduled processing:
-
-```bash
-# Edit crontab
-crontab -e
-
-# Add entries from cron/crontab.txt:
-# Process inbox every hour
-0 * * * * cd /path/to/cognosmap-automation && ./venv/bin/python scripts/process_inbox.py
-
-# Watch for voice memos (runs as daemon)
-@reboot cd /path/to/cognosmap-automation && ./venv/bin/python scripts/watch_folder.py ~/voice-memos/
-```
-
-### Batch Processing
-
-Process existing Notion inbox items:
-
-```bash
-python scripts/process_inbox.py --status New --limit 10
-```
+- Obsidian must be running with the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin enabled
+- The `obsidiantools` Python package must be installed (for vault graph construction)
+- The vault path must be accessible from the machine running the script
 
 ---
 
-## Troubleshooting
+## Vault Merge
 
-### "Could not find database" Error
+The `scripts/merge_vaults.py` script merges a secondary Obsidian vault ("Providence") into the primary vault ("RealIcloudVault") as a dedicated subfolder.
 
-1. Verify databases are shared with your integration in Notion
-2. Check that IDs in `config/settings.py` match your workspace
-3. Run `python scripts/cli.py check` to test connections
+### When to Use
 
-### Classification Returns Generic Results
+Use this when you have a separate Obsidian vault that should be consolidated into your main vault -- for example, a project-specific or topic-specific vault that has grown enough to justify integration.
 
-- Ensure `ANTHROPIC_API_KEY` is valid
-- Check that input text is substantial (very short inputs get generic results)
-- Review logs: `LOG_LEVEL=DEBUG python scripts/cli.py process "test"`
+### What It Does
 
-### Deduplication Too Aggressive/Permissive
+1. **Maps folders** -- Each Providence folder maps to a subfolder under `04_Resources/07_Providence/`:
+   - `00-inbox` -> `04_Resources/07_Providence/00-inbox`
+   - `01-journal` -> `04_Resources/07_Providence/01-journal`
+   - `02-providence` -> `04_Resources/07_Providence/02-providence`
+   - `03-scripture` -> `04_Resources/07_Providence/03-scripture`
+   - `05-concepts` -> `04_Resources/07_Providence/05-concepts`
+   - `06-sources` -> `04_Resources/07_Providence/06-sources`
+   - `07-projects` -> `04_Resources/07_Providence/07-projects`
 
-Adjust `DEDUPE_THRESHOLD` in `.env`:
-- Higher (0.90-0.95): Stricter, fewer matches
-- Lower (0.75-0.85): More permissive, more matches
+2. **Injects frontmatter** -- Adds `created` and `updated` timestamps (from file mtime) and a `source_vault/providence` tag for traceability.
 
-### Voice Transcription Fails
+3. **Rewrites Dataview queries** -- Dashboard notes have their `FROM` paths updated to the new locations so Dataview queries continue to work.
 
-- Verify `OPENAI_API_KEY` is valid
-- Check file format is supported
-- For large files, consider `WHISPER_MODE=local`
+4. **Copies templates** -- Providence templates go to `05_Utils/Templates/Providence/`.
 
-### Rate Limits
+5. **Copies attachments** -- Providence attachments go to `05_Utils/Attachments/Providence/`.
 
-If hitting API rate limits:
-- Add delays between batch processing
-- Use local Whisper for transcription
-- Consider caching embeddings
+6. **Skips conflicts** -- Files that already exist at the target path are skipped (logged in the manifest).
+
+7. **Generates a manifest** -- A JSON manifest is saved at `04_Resources/07_Providence/merge_manifest.json` with all operations, skips, and errors.
+
+### Usage
+
+```bash
+# Preview what would happen (no files touched)
+python scripts/merge_vaults.py --dry-run
+
+# Execute the merge
+python scripts/merge_vaults.py
+
+# Custom source/target paths
+python scripts/merge_vaults.py --source /path/to/source --target /path/to/target
+```
+
+Default paths are hardcoded to the developer's iCloud Obsidian vault locations. Override with `--source` and `--target` flags.
 
 ---
 
-## Repository
+## Testing
 
-**GitHub:** https://github.com/NicholasGrijalva/seeker-automations
+### Running Tests
+
+```bash
+# Activate the environment
+source venv/bin/activate
+
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run a specific test file
+pytest tests/test_autolink.py
+pytest tests/test_classify.py
+pytest tests/test_dedupe.py
+pytest tests/test_pipeline.py
+
+# Run a specific test class or method
+pytest tests/test_autolink.py::TestFindCandidates
+pytest tests/test_autolink.py::TestInsertWikilinks::test_basic_insertion
+```
+
+### Test Coverage
+
+| Test File | What It Covers |
+|-----------|----------------|
+| `test_autolink.py` | Candidate selection (title match, graph walk, tag overlap, self-skip, tiny title skip), wikilink insertion (basic, already-linked, case-insensitive, no double wrap, alias syntax), Claude response mocking, dry-run behavior, vault index folder exclusion |
+| `test_classify.py` | ClassificationResult field structure, mock Claude classification, valid content types/priorities/categories from settings |
+| `test_dedupe.py` | SimilarityMatch/DedupeResult field structure, cosine similarity math (identical/orthogonal/opposite vectors), no-match dedup scenario, default threshold validation |
+| `test_pipeline.py` | PipelineResult default values, Pipeline component initialization, full text-processing flow with mocked components, stage ordering |
+
+All tests use `unittest.mock` to avoid hitting real APIs. The autolink tests build a small NetworkX graph fixture to test graph traversal logic.
+
+### What Is Not Tested
+
+- `notion_client.py` (requires live Notion API)
+- `refine.py` and `templates.py` (no test files exist)
+- `clean.py` (no test file)
+- `watch_folder.py` and `process_inbox.py` (scripts, not unit-tested)
+- `merge_vaults.py` (filesystem operations, no test file)
+- End-to-end pipeline with real API calls
+
+---
+
+## Configuration Reference
+
+### Environment Variables
+
+All variables are loaded from `.env` via `python-dotenv`. See `.env.example` for a template.
+
+#### Required
+
+| Variable | Description |
+|----------|-------------|
+| `NOTION_API_KEY` | Notion internal integration token (starts with `ntn_`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude (starts with `sk-ant-`) |
+| `OPENAI_API_KEY` | OpenAI API key for Whisper + embeddings (starts with `sk-`) |
+
+#### Whisper (Transcription)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WHISPER_MODE` | `api` | `api` uses OpenAI hosted Whisper; `local` loads a model on-device |
+| `WHISPER_MODEL` | `whisper-1` | For API mode: `whisper-1`. For local mode: `tiny`, `base`, `small`, `medium`, `large` |
+
+#### Deduplication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEDUPE_THRESHOLD` | `0.85` | Cosine similarity threshold (0.0-1.0). Higher = stricter matching, fewer duplicates caught |
+
+#### Folder Watcher
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VOICE_MEMO_FOLDER` | `~/voice-memos` | Directory monitored by `watch_folder.py` |
+
+#### Obsidian / Autolink
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OBSIDIAN_LOCAL_REST_API_KEY` | (none) | API key from the Obsidian Local REST API plugin settings |
+| `OBSIDIAN_VAULT_PATH` | (hardcoded) | Absolute path to the Obsidian vault root |
+| `OBSIDIAN_REST_API_PORT` | `27124` | Port the REST API plugin listens on |
+| `AUTOLINK_MIN_CONFIDENCE` | `medium` | Minimum confidence for accepting a wikilink suggestion (`high`, `medium`, `low`) |
+| `AUTOLINK_MAX_SUGGESTIONS` | `8` | Maximum number of wikilinks Claude can suggest per note |
+
+#### Gemini (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEMINI_API_KEY` | (none) | Google Gemini API key (referenced in settings, for cheaper bulk tasks) |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model identifier |
+
+#### Other
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VOYAGE_API_KEY` | (none) | Voyage AI API key for alternative embeddings (not currently used in pipeline) |
+| `LOG_LEVEL` | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+### Hardcoded Settings (`config/settings.py`)
+
+These values are set directly in the `Settings` class and not configurable via `.env`:
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `claude_model` | `claude-sonnet-4-20250514` | Claude model used for classify, refine, clean, autolink |
+| `embedding_model` | `text-embedding-3-small` | OpenAI embedding model for dedup |
+| `embedding_dimensions` | `1536` | Embedding vector size |
+| `inbox_database_id` | (UUID) | Notion database ID for Inbox (page creation) |
+| `content_objects_database_id` | (UUID) | Notion database ID for Content Objects (page creation) |
+| `inbox_data_source_id` | (UUID) | Notion data source ID for Inbox (querying) |
+| `content_data_source_id` | (UUID) | Notion data source ID for Content Objects (querying) |
+| `content_types` | Essay, Video, Post, Proself | Valid content type classifications |
+| `priority_levels` | Active, Essential, Backlog | Valid priority levels |
+| `categories` | 8 categories | Valid content categories |
+| `clean_trigger_tag` | `voice-transcript` | Tag that triggers transcript cleaning |
+| `autolink_skip_folders` | `.obsidian`, `.smart-env`, `.trash`, `05_Utils`, `06_Archive` | Folders excluded from vault indexing |
+
+### Notion Database Schema
+
+#### Inbox Database
+
+| Property | Notion Type | Python Field | Notes |
+|----------|-------------|--------------|-------|
+| Title | Title | `title` | Required |
+| Date Added | Date | `date_added` | Auto-populated |
+| Status | Select | `status` | New, Triaged, Processed, Ready to Write |
+| Tags | Multi-select | `tags` | Auto-extracted by classifier |
+| Type | Select | `type` | Essay, Video, Post, Proself |
+| Project | Select | `project` | Optional |
+| URL | URL | `url` | Optional source URL |
+
+#### Content Objects Database
+
+| Property | Notion Type | Python Field | Notes |
+|----------|-------------|--------------|-------|
+| Name | Title | `name` | Required |
+| Category | Select | `category` | From predefined list |
+| Content Type | Select | `content_type` | Essay, Video, Post, Proself |
+| Status | Select | `status` | Backlog, To-Do, Planning, Draft, Published |
+| Date Created | Date | `date_created` | Auto-populated |
+| Tags | Multi-select | `tags` | Topic tags |
+| Main Idea | Rich Text | `main_idea` | Core insight (truncated to 2000 chars for Notion) |
+| Original Transcript | Rich Text | `original_transcript` | Raw source text (truncated to 2000 chars) |
+| Platform | Multi-select | `platform` | Target distribution platforms |
+| Target Publish Date | Date | `target_publish_date` | Optional deadline |
+| Atomic Ideas | Relation | `atomic_ideas` | Relation IDs to atomic idea pages |
+| Asset Folder URL | URL | `asset_folder_url` | Optional |
+| Transcript URL | URL | `transcript_url` | Optional |
+| Post Examples | URL | `post_examples` | Optional |
 
 ---
 
 ## License
 
-Private - Nicholas Grijalva
+Private -- Nicholas Grijalva

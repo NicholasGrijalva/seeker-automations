@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import anthropic
 import httpx
@@ -181,10 +182,12 @@ Rules:
     def get_note_content(self, vault_relative_path: str) -> str:
         """Read note content via Obsidian Local REST API."""
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        encoded_path = quote(vault_relative_path, safe="/")
         resp = httpx.get(
-            f"{self.api_base}/vault/{vault_relative_path}",
+            f"{self.api_base}/vault/{encoded_path}",
             headers=headers,
             verify=False,
+            timeout=10.0,
         )
         resp.raise_for_status()
         return resp.text
@@ -272,16 +275,32 @@ Return a JSON array. Keep reasons under 10 words."""
     ) -> str:
         """Insert [[wikilinks]] into content for matching phrases.
 
-        Processes from end to start to avoid offset drift.
+        Protects YAML frontmatter. Processes from end to start to avoid offset drift.
         """
+        # Split off YAML frontmatter so we don't corrupt it
+        body = content
+        frontmatter = ""
+        if content.startswith("---"):
+            end_idx = content.find("---", 3)
+            if end_idx != -1:
+                fm_end = end_idx + 3
+                frontmatter = content[:fm_end]
+                body = content[fm_end:]
+
+        # Pre-compute all [[...]] spans in the body to avoid inserting inside existing links
+        linked_spans = [
+            (m.start(), m.end()) for m in re.finditer(r"\[\[.*?\]\]", body)
+        ]
+
+        def is_inside_link(pos_start: int, pos_end: int) -> bool:
+            return any(ls <= pos_start and pos_end <= le for ls, le in linked_spans)
+
         insertions = []
         for s in suggestions:
             pattern = re.compile(re.escape(s.anchor_phrase), re.IGNORECASE)
-            for match in pattern.finditer(content):
+            for match in pattern.finditer(body):
                 start, end = match.start(), match.end()
-                before = content[max(0, start - 2) : start]
-                after = content[end : end + 2]
-                if "[[" in before or "]]" in after:
+                if is_inside_link(start, end):
                     continue
                 insertions.append((start, end, s))
                 break  # Only first occurrence
@@ -289,14 +308,14 @@ Return a JSON array. Keep reasons under 10 words."""
         insertions.sort(key=lambda x: x[0], reverse=True)
 
         for start, end, s in insertions:
-            original = content[start:end]
+            original = body[start:end]
             if original.lower() == s.target_title.lower():
                 replacement = f"[[{original}]]"
             else:
                 replacement = f"[[{s.target_title}|{original}]]"
-            content = content[:start] + replacement + content[end:]
+            body = body[:start] + replacement + body[end:]
 
-        return content
+        return frontmatter + body
 
     def update_note(self, vault_relative_path: str, new_content: str) -> bool:
         """Write updated note content via Obsidian Local REST API."""
@@ -304,11 +323,13 @@ Return a JSON array. Keep reasons under 10 words."""
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "text/markdown",
         }
+        encoded_path = quote(vault_relative_path, safe="/")
         resp = httpx.put(
-            f"{self.api_base}/vault/{vault_relative_path}",
+            f"{self.api_base}/vault/{encoded_path}",
             headers=headers,
             content=new_content.encode("utf-8"),
             verify=False,
+            timeout=10.0,
         )
         resp.raise_for_status()
         return True
