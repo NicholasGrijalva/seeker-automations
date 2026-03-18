@@ -26,7 +26,7 @@ class PipelineResult:
     """Result of running the full pipeline."""
 
     success: bool
-    stage_reached: str  # transcribe, classify, dedupe, notion, refine, template
+    stage_reached: str  # transcribe, classify, dedupe, notion, refine, template, autolink
     error: Optional[str] = None
 
     # Outputs from each stage
@@ -36,6 +36,7 @@ class PipelineResult:
     notion_page_id: Optional[str] = None
     refined_content: Optional[RefinedContent] = None
     platform_outputs: dict[str, PlatformOutput] = field(default_factory=dict)
+    autolink_result: Optional[object] = None  # AutolinkResult (lazy import)
 
     # Metadata
     input_type: str = "text"  # "text", "audio", "file"
@@ -235,6 +236,23 @@ class Pipeline:
                         except Exception as e:
                             logger.warning(f"Failed to generate {platform} template: {e}")
                     result.stage_reached = "template"
+
+            # Stage 7: Autolink (if obsidian_note_path provided via source_context)
+            if source_context and source_context.startswith("obsidian:"):
+                obsidian_path = source_context.removeprefix("obsidian:")
+                try:
+                    from .autolink import AutoLinker
+
+                    logger.info(f"Stage 7: Autolinking {obsidian_path}")
+                    linker = AutoLinker()
+                    result.autolink_result = linker.autolink_note(obsidian_path)
+                    if result.autolink_result.success:
+                        logger.info(
+                            f"Autolink: added {result.autolink_result.links_added} wikilinks"
+                        )
+                    result.stage_reached = "autolink"
+                except Exception as e:
+                    logger.warning(f"Autolink failed (non-fatal): {e}")
 
             result.success = True
 

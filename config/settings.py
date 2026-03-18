@@ -80,6 +80,27 @@ class Settings:
         self.embedding_model = "text-embedding-3-small"  # OpenAI
         self.embedding_dimensions = 1536
 
+        # Gemini (used for autolink - cheaper than Claude for bulk tasks)
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+        # Obsidian Local REST API
+        self.obsidian_rest_api_key = os.getenv("OBSIDIAN_LOCAL_REST_API_KEY", "")
+        self.obsidian_vault_path = Path(
+            os.getenv(
+                "OBSIDIAN_VAULT_PATH",
+                "/Users/nick/Library/Mobile Documents/iCloud~md~obsidian/Documents/RealIcloudVault",
+            )
+        )
+        self.obsidian_rest_api_port = int(os.getenv("OBSIDIAN_REST_API_PORT", "27124"))
+
+        # Autolink settings
+        self.autolink_min_confidence = os.getenv("AUTOLINK_MIN_CONFIDENCE", "medium")
+        self.autolink_max_suggestions = int(os.getenv("AUTOLINK_MAX_SUGGESTIONS", "8"))
+        self.autolink_skip_folders = [
+            ".obsidian", ".smart-env", ".trash", "05_Utils", "06_Archive"
+        ]
+
         # Transcript cleaning settings
         self.clean_trigger_tag = "voice-transcript"  # Tag that triggers cleaning
         self.filler_words = [

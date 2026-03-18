@@ -289,5 +289,56 @@ def check():
         console.print(f"[red]✗[/red] OpenAI connection failed: {e}")
 
 
+@cli.command()
+@click.argument("note_path")
+@click.option("--dry-run", is_flag=True, help="Show suggestions without modifying the note")
+def autolink(note_path: str, dry_run: bool):
+    """Auto-insert [[wikilinks]] into an Obsidian note.
+
+    NOTE_PATH is the vault-relative path (e.g., '01_Capture/My Note.md').
+    """
+    from src.autolink import AutoLinker
+
+    if not settings.obsidian_rest_api_key:
+        console.print("[red]OBSIDIAN_LOCAL_REST_API_KEY not set in .env[/red]")
+        sys.exit(1)
+    if not settings.gemini_api_key:
+        console.print("[red]GEMINI_API_KEY not set in .env[/red]")
+        sys.exit(1)
+
+    linker = AutoLinker()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            "Dry run..." if dry_run else "Autolinking...", total=None
+        )
+        result = linker.autolink_note(note_path, dry_run=dry_run)
+
+    if result.success:
+        console.print(
+            Panel(
+                f"[green]{'Dry run complete' if dry_run else 'Done'}[/green] - "
+                f"{result.links_added} links {'would be ' if dry_run else ''}added",
+                title=f"Autolink: {note_path}",
+            )
+        )
+        if result.suggestions:
+            table = Table(title="Suggestions")
+            table.add_column("Target", style="cyan")
+            table.add_column("Anchor", style="white")
+            table.add_column("Confidence", style="yellow")
+            table.add_column("Reason", style="dim")
+            for s in result.suggestions:
+                table.add_row(s.target_title, s.anchor_phrase, s.confidence, s.reason)
+            console.print(table)
+    else:
+        console.print(f"[red]Autolink failed:[/red] {result.error}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()
