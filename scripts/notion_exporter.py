@@ -327,7 +327,6 @@ class NotionExporter:
         )
 
         if not pages:
-            console.print(f"  No {source.trigger_status} items in {source.name}")
             return metrics
 
         console.print(f"  Found {len(pages)} {source.trigger_status} items in {source.name}")
@@ -415,17 +414,26 @@ class NotionExporter:
 
         return metrics
 
-    def export_all(self, limit: int = 50) -> dict[str, ExportMetrics]:
+    def export_all(self, limit: int = 50, quiet: bool = False) -> dict[str, ExportMetrics]:
         """Export from all configured sources."""
         results = {}
+        any_activity = False
+
         for source in settings.export_sources:
-            console.print(f"\n[bold]Exporting: {source.name}[/bold]")
             metrics = self.export_source(source, limit=limit)
             results[source.name] = metrics
 
+            has_activity = metrics.exported > 0 or metrics.failed > 0
+            if has_activity:
+                any_activity = True
+
+            # In quiet mode, only print when something happened
+            if quiet and not has_activity:
+                continue
+
+            console.print(f"\n[bold]Exporting: {source.name}[/bold]")
             for detail in metrics.details:
                 console.print(detail)
-
             console.print(
                 f"  Exported: {metrics.exported}  "
                 f"Skipped: {metrics.skipped}  "
@@ -454,12 +462,20 @@ class NotionExporter:
             f"  Press Ctrl+C to stop\n"
         )
 
+        cycle = 0
         while running:
             try:
-                self.export_all()
+                results = self.export_all(quiet=True)
+                total = sum(m.exported for m in results.values())
+                if total > 0:
+                    console.print(f"[dim]{datetime.now().strftime('%H:%M:%S')} exported {total} items[/dim]")
+                elif cycle % 30 == 0:
+                    # Heartbeat every 30 cycles so you know it's alive
+                    console.print(f"[dim]{datetime.now().strftime('%H:%M:%S')} watching... (no new items)[/dim]")
+                cycle += 1
             except Exception as e:
                 logger.error(f"Export cycle failed: {e}")
-                console.print(f"[red]Error: {e}[/red]")
+                console.print(f"[red]{datetime.now().strftime('%H:%M:%S')} Error: {e}[/red]")
 
             # Sleep in small increments so we can catch signals
             for _ in range(interval):
@@ -557,6 +573,9 @@ def watch(interval: Optional[int]):
         for e in errors:
             console.print(f"[red]{e}[/red]")
         return
+
+    # Suppress httpx request logging in watch mode (too noisy)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     poll_interval = interval or settings.export_poll_interval
 
