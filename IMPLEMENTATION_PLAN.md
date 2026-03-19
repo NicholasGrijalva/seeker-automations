@@ -83,6 +83,16 @@ This document outlines the implementation plan for the CognosMap content automat
               ▼              ▼              ▼              ▼
           Twitter       LinkedIn       Substack        Video
           Thread         Post          Essay          Script
+
+                      ┌─────────────┐
+                      │   NOTION    │  (Triaged items)
+                      │   EXPORTER  │
+                      └──────┬──────┘
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+      ~/notion-vault/               CognosMap API
+      (persistent .md)          (/api/synthesis/ingest)
 ```
 
 ---

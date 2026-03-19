@@ -5,11 +5,33 @@ Central configuration for all pipeline components.
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
 from dotenv import load_dotenv
 
 # Load environment variables (override=True to override existing empty vars)
 load_dotenv(override=True)
+
+
+@dataclass
+class ExportSource:
+    """Configuration for a Notion database to export.
+
+    Database-agnostic: add new entries to export from any text-based Notion DB.
+    """
+
+    name: str                         # "inbox", "content_objects", etc.
+    database_id: str
+    data_source_id: str
+    output_dir: str                   # subfolder in notion_vault_path
+    trigger_status: str               # watch for this status value
+    post_export_status: str           # set after successful export
+    title_prop: str                   # property name for page title
+    content_prop: Optional[str]       # property with text content, or None for page body
+    tag_prop: str                     # property name for tags (multi_select)
+    status_prop: str                  # property name for status (select)
 
 
 class Settings:
@@ -107,6 +129,29 @@ class Settings:
             "um", "uh", "like", "you know", "so", "basically",
             "actually", "literally", "right", "i mean", "kind of", "sort of",
             "anyway", "well"  # when used as filler
+        ]
+
+        # Notion Vault Export
+        self.notion_vault_path = Path(
+            os.getenv("NOTION_VAULT_PATH", "~/notion-vault")
+        ).expanduser()
+        self.cognosmap_api_base = os.getenv("COGNOSMAP_API_BASE", "http://localhost:8000")
+        self.export_poll_interval = int(os.getenv("EXPORT_POLL_INTERVAL", "60"))
+
+        # Export sources -- add new ExportSource entries to sync additional databases
+        self.export_sources = [
+            ExportSource(
+                name="inbox",
+                database_id=self.inbox_database_id,
+                data_source_id=self.inbox_data_source_id,
+                output_dir="inbox",
+                trigger_status="Triaged",
+                post_export_status="Processed",
+                title_prop="Title",
+                content_prop="Transcript",
+                tag_prop="Tags",
+                status_prop="Status",
+            ),
         ]
 
     def validate(self) -> list[str]:

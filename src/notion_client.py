@@ -246,10 +246,10 @@ class NotionClient:
 
     def get_page_content(self, page_id: str) -> str:
         """Get the text content of a page's blocks."""
-        blocks = self.client.blocks.children.list(block_id=page_id)
+        blocks = self.get_page_blocks(page_id)
         text_parts = []
 
-        for block in blocks["results"]:
+        for block in blocks:
             block_type = block["type"]
             block_data = block.get(block_type, {})
 
@@ -260,6 +260,87 @@ class NotionClient:
                         text_parts.append(text_obj["plain_text"])
 
         return "\n".join(text_parts)
+
+    # ==================== EXPORT METHODS ====================
+
+    def query_by_status(
+        self,
+        data_source_id: str,
+        status_prop: str,
+        status_value: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Query a database for pages matching a status. Returns raw page dicts."""
+        query_params = {
+            "data_source_id": data_source_id,
+            "page_size": min(limit, 100),
+            "filter": {
+                "property": status_prop,
+                "select": {"equals": status_value},
+            },
+        }
+
+        response = self.client.data_sources.query(**query_params)
+        return response.get("results", [])
+
+    def get_page_blocks(self, page_id: str) -> list[dict]:
+        """Get all blocks for a page. Handles pagination."""
+        all_blocks = []
+        cursor = None
+
+        while True:
+            kwargs = {"block_id": page_id}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+
+            response = self.client.blocks.children.list(**kwargs)
+            all_blocks.extend(response.get("results", []))
+
+            if not response.get("has_more"):
+                break
+            cursor = response.get("next_cursor")
+
+        return all_blocks
+
+    def get_file_block_urls(self, blocks: list[dict]) -> list[dict]:
+        """Extract file/audio block URLs from a block list.
+
+        Returns list of dicts with keys: url, filename, block_type.
+        Notion file URLs are temporary signed URLs (~1hr validity).
+        """
+        files = []
+        file_block_types = {"file", "audio", "video", "image", "pdf"}
+
+        for block in blocks:
+            block_type = block.get("type", "")
+            if block_type not in file_block_types:
+                continue
+
+            block_data = block.get(block_type, {})
+
+            # Notion files can be "file" (uploaded) or "external" (URL)
+            file_info = block_data.get("file") or block_data.get("external")
+            if not file_info:
+                continue
+
+            url = file_info.get("url", "")
+            if not url:
+                continue
+
+            # Try to extract filename from URL or use block ID
+            name = block_data.get("name", "")
+            if not name:
+                # Extract from URL path before query params
+                url_path = url.split("?")[0]
+                name = url_path.split("/")[-1] if "/" in url_path else block["id"]
+
+            files.append({
+                "url": url,
+                "filename": name,
+                "block_type": block_type,
+            })
+
+        return files
 
     def append_to_page(self, page_id: str, text: str, heading: Optional[str] = None):
         """Append text to an existing page."""

@@ -91,6 +91,26 @@ The existing tests are well-structured with proper mocking and cover the most co
 
 ---
 
+### Notion Exporter: CognosMap Bridge
+
+[notion_exporter.py](scripts/notion_exporter.py): Added March 2026 to bridge Notion databases to CognosMap's knowledge graph. The exporter watches for Triaged items, exports them as `.md` files with YAML frontmatter, downloads audio attachments, and syncs to CognosMap's synthesis API.
+
+**Architecture fit:** Runs as a separate watcher process alongside the main pipeline. It consumes the output of `process_inbox.py classify` (which moves items New -> Triaged) and produces persistent `.md` files + CognosMap graph nodes.
+
+**Design decisions:**
+- Database-agnostic via `ExportSource` dataclass -- adding new Notion databases is config-only
+- Content hashing for idempotent re-runs (`.export-state.json`)
+- `.md` files as persistent source data for long-term truthfinding
+- Graceful degradation: if CognosMap API is down, files are still written and state tracked
+
+**Integration with CognosMap:**
+- Uses existing `/api/synthesis/ingest` endpoint (same as `sync_vault.py`)
+- VaultNote nodes get `note_id: "notion:{id}"` prefix (vs `"vault:{title}"` for Obsidian)
+- Frontmatter metadata stored on graph nodes for future bidirectional sync
+- Both Notion exports and Obsidian notes share the same Pinecone namespace (`vault_notes`), enabling cross-source semantic search
+
+---
+
 ## Comprehensive Summary
 
 The codebase is a focused, single-purpose automation tool that does its job well for personal use. The linear pipeline architecture is appropriate for the problem -- there are no complex branching workflows or concurrent processing needs that would justify more sophisticated orchestration.

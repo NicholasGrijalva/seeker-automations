@@ -1,6 +1,6 @@
 # CognosMap Automation Pipeline
 
-A Python automation system that transforms voice memos and raw ideas into structured, searchable content in Notion. The pipeline handles transcription, classification, deduplication, refinement, multi-platform output generation, and auto-wikilinking for Obsidian vaults.
+A Python automation system that transforms voice memos and raw ideas into structured, searchable content in Notion, then syncs to CognosMap's knowledge graph. The pipeline handles transcription, classification, deduplication, refinement, multi-platform output generation, auto-wikilinking for Obsidian vaults, and export to CognosMap for truth-finding and interconnection discovery.
 
 ---
 
@@ -12,10 +12,12 @@ A Python automation system that transforms voice memos and raw ideas into struct
 4. [Setup](#setup)
 5. [Usage](#usage)
 6. [Pipeline Stages](#pipeline-stages)
-7. [Autolink System](#autolink-system)
-8. [Vault Merge](#vault-merge)
-9. [Testing](#testing)
-10. [Configuration Reference](#configuration-reference)
+7. [Notion Exporter](#notion-exporter)
+8. [Vault Sync](#vault-sync)
+9. [Autolink System](#autolink-system)
+10. [Vault Merge](#vault-merge)
+11. [Testing](#testing)
+12. [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -29,6 +31,8 @@ Each stage is independently usable, but the orchestrator (`pipeline.py`) chains 
 
 The autolink subsystem separately handles Obsidian vault enrichment -- given a newly written note, it scans the vault graph, selects candidate link targets, and uses Claude to decide which `[[wikilinks]]` to insert.
 
+The **Notion Exporter** watches Notion databases for triaged items and exports them as persistent `.md` files to `~/notion-vault/`, then syncs to CognosMap's synthesis API for graph ingestion and cross-source connection discovery. The **Vault Sync** script pushes Obsidian notes to the same API endpoint.
+
 ### External Dependencies
 
 | Service | Purpose | Required |
@@ -36,6 +40,7 @@ The autolink subsystem separately handles Obsidian vault enrichment -- given a n
 | Anthropic Claude | Classification, refinement, transcript cleaning, autolink decisions | Yes |
 | OpenAI | Whisper transcription (API mode), embedding generation for dedup | Yes |
 | Notion API | Database reads/writes (Inbox + Content Objects) | Yes |
+| CognosMap API | Synthesis API for graph ingestion (VaultNote nodes + embeddings) | Only for exporter/sync |
 | Obsidian Local REST API | Read/write notes for autolink | Only for autolink |
 | Google Gemini | Referenced in settings (cheaper bulk tasks) | Optional |
 
@@ -78,6 +83,13 @@ flowchart TD
         OR["Obsidian REST API"]
     end
 
+    subgraph "CognosMap Export"
+        NE["Notion Exporter\n(notion_exporter.py)"]
+        NV["~/notion-vault/\n(.md files + audio)"]
+        CM["CognosMap Synthesis API\n(/api/synthesis/ingest)"]
+        SV["Vault Sync\n(sync_vault.py)"]
+    end
+
     VM --> T
     RT --> CL
     T --> CL
@@ -97,6 +109,11 @@ flowchart TD
     AL --> OV
     AL --> OR
     NP --> RE
+    IB -->|"Status: Triaged"| NE
+    NE --> NV
+    NE --> CM
+    OV --> SV
+    SV --> CM
 ```
 
 ### Batch Processing Flow
@@ -111,6 +128,10 @@ flowchart LR
         ST["stats\n(Count by status)"]
     end
 
+    subgraph "notion_exporter.py"
+        EX["export / watch\n(Triaged -> Processed)"]
+    end
+
     IB2["Inbox DB"] --> CI
     IB2 --> CLE
     CI --> REF
@@ -118,6 +139,9 @@ flowchart LR
     REF --> PRO
     PRO --> CO2["Content Objects DB"]
     IB2 --> ST
+    CI -->|"Triaged items"| EX
+    EX --> NV2["~/notion-vault/*.md"]
+    EX --> CM2["CognosMap API"]
 ```
 
 ---
@@ -147,6 +171,8 @@ cognosmap-automation/
 |-- scripts/                      # Runnable entry points
 |   |-- cli.py                    # Main CLI (process, refine, inbox, content, check, autolink)
 |   |-- process_inbox.py          # Batch inbox operations (classify, clean, refine, promote, stats)
+|   |-- notion_exporter.py        # Notion -> .md export + CognosMap sync (export, watch, status)
+|   |-- sync_vault.py             # Obsidian vault -> CognosMap synthesis API sync
 |   |-- watch_folder.py           # Filesystem watcher for auto-processing voice memos
 |   |-- merge_vaults.py           # Merge Providence Obsidian vault into RealIcloudVault
 |
@@ -326,6 +352,62 @@ python scripts/process_inbox.py promote --dry-run
 python scripts/process_inbox.py stats
 ```
 
+### Notion Exporter (`scripts/notion_exporter.py`)
+
+Watches Notion databases for triaged items, exports them as `.md` files with YAML frontmatter, downloads audio attachments, and syncs to CognosMap's synthesis API.
+
+```bash
+# One-shot export of all Triaged items
+python scripts/notion_exporter.py export
+
+# Preview what would be exported (no files written, no API calls)
+python scripts/notion_exporter.py export --dry-run --limit 5
+
+# Export from a specific source only
+python scripts/notion_exporter.py export --source inbox
+
+# Long-running watch mode (polls every 60s by default)
+python scripts/notion_exporter.py watch
+
+# Watch with custom interval
+python scripts/notion_exporter.py watch --interval 30
+
+# Show export state (what has been exported, sync status)
+python scripts/notion_exporter.py status
+```
+
+**Pipeline position:** Runs after `process_inbox.py classify` has moved items from New to Triaged. The exporter picks up Triaged items, exports them, then marks them as Processed in Notion.
+
+```
+[capture] -> [classify: New->Triaged] -> [notion_exporter: Triaged->Processed] -> CognosMap
+```
+
+**Output:**
+- `.md` files in `~/notion-vault/inbox/` with YAML frontmatter (schema_version, notion_id, tags, etc.)
+- Audio files (`.mp3`, `.m4a`, etc.) downloaded alongside the `.md` files
+- State tracked in `~/notion-vault/.export-state.json` (content hash for idempotent re-runs)
+- VaultNote nodes in CognosMap's Neo4j graph with embeddings in Pinecone
+
+### Vault Sync (`scripts/sync_vault.py`)
+
+Syncs Obsidian vault notes to CognosMap's synthesis API for graph ingestion and cross-source connection discovery.
+
+```bash
+# Full sync (all notes in vault)
+python scripts/sync_vault.py
+
+# Preview without syncing
+python scripts/sync_vault.py --dry-run
+
+# Sync first 10 notes only
+python scripts/sync_vault.py --limit 10
+
+# Custom vault path and API endpoint
+python scripts/sync_vault.py --vault /path/to/vault --api http://localhost:8000
+```
+
+Each note becomes a VaultNote node in Neo4j with wikilinks preserved as `LINKS_TO` relationships and content embedded in Pinecone for semantic search.
+
 ### Folder Watcher (`scripts/watch_folder.py`)
 
 Monitors a directory for new audio files and processes them automatically.
@@ -471,6 +553,104 @@ Triggers when `source_context` starts with `"obsidian:"`. See [Autolink System](
 A standalone module (not part of the main pipeline) for cleaning voice transcripts. Uses Claude to remove filler words (um, uh, like, you know, etc.) and format wall-of-text transcripts into logical paragraphs while strictly preserving the speaker's original wording and meaning.
 
 Accessible via: `python scripts/process_inbox.py clean --tag voice-transcript`
+
+---
+
+## Notion Exporter
+
+The Notion Exporter (`scripts/notion_exporter.py`) bridges Notion databases to CognosMap's knowledge graph by exporting pages as persistent `.md` files and syncing them to the synthesis API.
+
+### Architecture
+
+```
+Notion Inbox (Status: Triaged)
+         |
+   [notion_exporter.py]
+         |
+         +---> ~/notion-vault/inbox/*.md     (persistent .md archive)
+         +---> ~/notion-vault/inbox/*.mp3    (audio attachments)
+         +---> CognosMap /api/synthesis/ingest  (graph + embeddings)
+         +---> Notion status update (Triaged -> Processed)
+```
+
+### How It Works
+
+1. **Poll**: Queries Notion for pages where Status = trigger status (e.g., "Triaged")
+2. **Hash check**: Computes content hash; skips pages unchanged since last export
+3. **Extract**: Pulls properties (title, tags, type, dates, URLs) + body content + audio blocks
+4. **Export**: Writes `.md` file with YAML frontmatter to `~/notion-vault/{source}/`
+5. **Download audio**: Finds file/audio blocks, downloads via temporary signed URLs
+6. **Sync**: POSTs to CognosMap `/api/synthesis/ingest` with `note_id: "notion:{id}"`
+7. **Update**: Sets Notion status to post_export_status (e.g., "Processed")
+8. **State**: Records `{notion_id: {content_hash, filename, exported_at}}` in `.export-state.json`
+
+### Exported File Format
+
+```yaml
+---
+schema_version: 1
+source: notion
+notion_id: 2c0eba0c-abd5-45d0-a760-6549cd0f3c84
+notion_database: inbox
+type: Audio
+status: Triaged
+tags:
+  - knowledge management
+  - cognitive load
+date_added: "2026-03-18"
+source_url: "https://youtube.com/watch?v=..."
+has_audio: true
+audio_file: 2c0eba0c.mp3
+content_hash: a1b2c3d4e5f67890
+exported_at: "2026-03-18T12:00:00Z"
+---
+
+# Voice Memo Title
+
+Transcript content here...
+```
+
+Filenames follow the pattern `{slugified-title}--{notion-id-short}.md` for human readability with machine-stable IDs.
+
+### Extensibility
+
+The exporter is database-agnostic. To add a new Notion database, add an `ExportSource` entry in `config/settings.py`:
+
+```python
+ExportSource(
+    name="content_objects",
+    database_id="db6f21b8-...",
+    data_source_id="15d28d70-...",
+    output_dir="content-objects",
+    trigger_status="Planning",
+    post_export_status="To-Do",
+    title_prop="Name",
+    content_prop=None,  # use page body blocks
+    tag_prop="Tags",
+    status_prop="Status",
+),
+```
+
+No code changes required -- the exporter iterates over all configured sources.
+
+---
+
+## Vault Sync
+
+The vault sync script (`scripts/sync_vault.py`) reads an Obsidian vault via `obsidiantools` and POSTs each note to CognosMap's `/api/synthesis/ingest` endpoint.
+
+### What It Creates in CognosMap
+
+For each note:
+- **VaultNote node** in Neo4j with title, content hash, tags, and embedding ID
+- **Embedding** in Pinecone (`vault_notes` namespace) for semantic search
+- **LINKS_TO relationships** from wikilinks (e.g., `[[Essentialism]]` creates an edge)
+
+This enables CognosMap to find cross-source connections between Notion exports and Obsidian notes, since both are stored as VaultNote nodes with embeddings.
+
+### Folder Exclusions
+
+The following vault folders are skipped during sync: `.obsidian`, `.smart-env`, `.trash`, `05_Utils`, `06_Archive`
 
 ---
 
@@ -652,7 +832,7 @@ All tests use `unittest.mock` to avoid hitting real APIs. The autolink tests bui
 - `notion_client.py` (requires live Notion API)
 - `refine.py` and `templates.py` (no test files exist)
 - `clean.py` (no test file)
-- `watch_folder.py` and `process_inbox.py` (scripts, not unit-tested)
+- `watch_folder.py`, `process_inbox.py`, `notion_exporter.py`, `sync_vault.py` (scripts, not unit-tested)
 - `merge_vaults.py` (filesystem operations, no test file)
 - End-to-end pipeline with real API calls
 
@@ -701,6 +881,14 @@ All variables are loaded from `.env` via `python-dotenv`. See `.env.example` for
 | `AUTOLINK_MIN_CONFIDENCE` | `medium` | Minimum confidence for accepting a wikilink suggestion (`high`, `medium`, `low`) |
 | `AUTOLINK_MAX_SUGGESTIONS` | `8` | Maximum number of wikilinks Claude can suggest per note |
 
+#### Notion Exporter
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NOTION_VAULT_PATH` | `~/notion-vault` | Directory where exported `.md` files and audio are stored |
+| `COGNOSMAP_API_BASE` | `http://localhost:8000` | CognosMap API base URL for synthesis endpoints |
+| `EXPORT_POLL_INTERVAL` | `60` | Seconds between polls in watch mode |
+
 #### Gemini (Optional)
 
 | Variable | Default | Description |
@@ -733,6 +921,7 @@ These values are set directly in the `Settings` class and not configurable via `
 | `categories` | 8 categories | Valid content categories |
 | `clean_trigger_tag` | `voice-transcript` | Tag that triggers transcript cleaning |
 | `autolink_skip_folders` | `.obsidian`, `.smart-env`, `.trash`, `05_Utils`, `06_Archive` | Folders excluded from vault indexing |
+| `export_sources` | `[ExportSource(name="inbox", ...)]` | List of Notion databases to export (see [Extensibility](#extensibility)) |
 
 ### Notion Database Schema
 
